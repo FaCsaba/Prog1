@@ -111,6 +111,7 @@ int main(void) {
         cout << (sum / 4) << endl;
     }
 
+    // homework
     // 1 2 3 4
     // 5 6 7 8
     // 9 10 11 12
@@ -121,7 +122,7 @@ int main(void) {
 
     // soronkenti max
     for (int i = 0; i < sizeof(numbers)/sizeof(int); i++) {
-        
+
     }
 
     return 0;
