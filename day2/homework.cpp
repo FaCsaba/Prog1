@@ -46,13 +46,16 @@ int main(void) {
         }
     }
 
-    double logged;
-    for (int i = 0; i < 300; i++) {
-        logged = log2(i);
-        if (floor(logged) == logged) { // check if double is a whole number
-            std::cout << "Power of 2: " << i << std::endl;
-        }
+    // find all powers of two looping up to 300
+    int i = 0;
+    int powed = 0;
+    while (true) {
+        powed = pow(2, i);
+        if (powed > 300) {break;}
+        std::cout << "Power of two: " << powed << std::endl;
+        i++;
     }
+    
 
     return 0;
 }

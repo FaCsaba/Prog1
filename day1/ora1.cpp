@@ -45,11 +45,11 @@ int main() {
     std::cout << g << std::endl;
 
     std::cout << "\\ \?" << std::endl; // just like most other languages \ is an escape character
-    // special character
+    // special characters
     // \ esc
     // " string literal
     // ' character literal
-    // ? this is stupid I have no idea why we say this is a special character
+    // ? i still don't know what this is for
     // a alert
     // n newline
     // b backspace
