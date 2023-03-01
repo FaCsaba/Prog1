@@ -18,8 +18,8 @@ int main(void) {
     int max;
     int current;
     for (int i = 0; i < sizeof(numbers)/sizeof(numbers[0]); i++) {
-        max = INT_MIN;
-        for (int j = 0; j < sizeof(numbers[0])/sizeof(int); j++) {
+        max = numbers[0][0];
+        for (int j = 1; j < sizeof(numbers[0])/sizeof(int); j++) {
             current = numbers[i][j];
             if (max < current) {
                 max = current;
