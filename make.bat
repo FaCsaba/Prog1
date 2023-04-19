@@ -18,3 +18,4 @@ gcc day7\palindrome.c -o dest\palindrome.exe
 gcc day7\mario3.c -o dest\mario3.exe
 gcc day7\strong_password.c -o dest\strong_password.exe
 g++ day7\eloadas7.cpp -o dest\eloadas7.exe
+g++ day8\day8.cpp -o dest\day8.exe
