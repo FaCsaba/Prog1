@@ -85,6 +85,11 @@ std::string youngest(std::vector<Animal> animals) {
     return a.name;
 }
 
+std::ostream& operator<<(std::ostream& os, Animal& a) {
+    os << a.name << " " << a.age << std::endl;
+    return os;
+}
+
 int main(void) {
     Animal a("asdf");
     a.name = "Blocky";
@@ -118,7 +123,7 @@ int main(void) {
 
 
     for ( auto animal : animals ) {
-        std::cout << animal.name << std::endl;
+        std::cout << animal << std::endl;
     }
 
     std::cout << oldest(animals) << " " << youngest(animals) << std::endl;

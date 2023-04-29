@@ -1,0 +1,10 @@
+1.
+udprog on source forge
+mandelbrot halmazt csinal
+source/kezdo/elsoqt/mandelbrot
+hatarido 1het
+
+2.
+szamologepet kivetelkezelessel
+from input
+hatarido 2het
