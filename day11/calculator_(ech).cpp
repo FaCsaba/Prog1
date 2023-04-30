@@ -6,6 +6,8 @@
 */
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <sstream>
 #include <cctype>
 #include <iostream>
 #include <cassert>
@@ -84,10 +86,12 @@ std::ostream& operator<<(std::ostream &o, TokenType tt) {
 
 
 typedef struct {
-        // Line number on which the token starts
+        // Line number on which the token starts. Starts at 1
         uint64_t line;
-        // Column number on which the token starts
+        // Column number on which the token starts. Starts at 1
         uint64_t column;
+        // Actual position/index into the program. Starts at 0
+        uint64_t pos;
 } Pos;
 
 std::ostream& operator<<(std::ostream& o, Pos pos) {
@@ -210,7 +214,7 @@ class Tokenizer {
         Pos get_pos() {
             uint64_t line = number_of_new_lines + 1;
             uint64_t column = pos - start_of_new_line + 1;
-            return Pos {line, column};
+            return Pos {line, column, pos};
         }
 
     public:
@@ -295,6 +299,51 @@ char *copy_string(const char *str) {
     return ret;
 }
 
+uint64_t get_lines_count(const char *program) {
+    uint64_t n = 1;
+    for(uint64_t i = 0; program[i] != '\0'; i++) {
+        if (program[i] == '\n')
+            n++;
+    }
+    return n;
+}
+
+std::string& operator<<(std::string &a, std::string b) {
+    a += b;
+    return a;
+}
+
+std::string& operator<<(std::string &a, Pos b) {
+    a << std::to_string(b.line) << ":" << std::to_string(b.column);
+    return a;
+}
+
+uint64_t get_line_start_pos(const char *program, uint64_t line_num) {
+    uint64_t curr_line_num = 1;
+    for (uint64_t i = 0; program[i] != '\0'; i++) {
+        if (curr_line_num == line_num)
+            return i;
+        if (program[i] == '\n') {
+            curr_line_num++;
+        }
+    }
+}
+
+/// Gets the specified line by line number
+std::string get_line(const char *program, uint64_t line_num) {
+    std::string ret;
+    uint64_t curr_line_num = 1;
+    for(uint64_t i = 0; program[i] != '\0'; i++) {
+        if (curr_line_num == line_num && program[i] != '\n') {
+            ret.push_back(program[i]);
+        }
+
+        if (program[i] == '\n')
+            curr_line_num++;
+    }
+    return ret;
+}
+
 class CalcException : std::exception {
     private:
         const char *_msg;
@@ -303,25 +352,48 @@ class CalcException : std::exception {
         const Pos _end;
         char *ret;
     public:
-        CalcException(const char *program, const char* msg, Pos start, Pos end) : _program(program), _msg(msg), _start(start), _end(end)  {};
-        const char* what() const noexcept override { 
-            std::string temp(_msg);
+        CalcException(const char *program, const char *msg, Pos start, Pos end) : _program(program), _msg(msg), _start(start), _end(end)  {};
+        const char* what() const noexcept override {
+            std::string oss("Encountered the following error at ");
+            oss << _start << ":\n";
+            uint64_t lines_count = get_lines_count(_program);
+            for (uint64_t curr_line = 1; curr_line <= lines_count; curr_line++) {
+                if (_start.line <= curr_line && curr_line <= _end.line) {
+                    std::string temp;
+                    temp << std::to_string(curr_line) << " | ";
+                    std::string line;
+                    line << get_line(_program, curr_line);
+                    uint64_t curr_line_start = get_line_start_pos(_program, curr_line);
 
-            temp.append("\n");
-            // TODO: create error squiggles underneath where error happened
+                    oss << temp << line << "\n";
+                    uint64_t line_start_offset = temp.length();
+                    for (uint64_t i = 0; i < line_start_offset; i++) {
+                        oss << " ";
+                    }
+                    
+                    uint64_t line_end = curr_line == _end.line ? _end.column : line.length();
+                    for (uint64_t curr_col = 0; curr_col < line_end; curr_col++) {
+                        oss << (_start.pos <= curr_line_start+curr_col && curr_line_start+curr_col < _end.pos ? "^" : " ");
+                    }
+                    if (curr_line != _end.line) {
+                        oss << "\n";
+                    }
+                }
+            }
+            oss << _msg << "\n";
 
-            return copy_string(temp.c_str());
+            return copy_string(oss.c_str());
         }
 };
 
-class EvalException : CalcException {
+class EvalException : public CalcException {
     private:
         const char *_msg;
     public:
-        EvalException(const char *program, const char* msg, Pos start, Pos end) : CalcException(program, msg, start, end) {};
+        EvalException(const char *program, const char *msg, Pos start, Pos end) : CalcException(program, msg, start, end) {};
 };
 
-uint64_t factorial(uint64_t n) {
+double factorial(double n) {
     if (n == 0 || n == 1)
         return 1;
     return n * factorial(n - 1);
@@ -331,7 +403,7 @@ enum ExprType {
     /// Start of an expr tree
     ///
     /// Used to denote if there is nothing on the left side of an expr 
-    /// instead it should look at a token to determine its left node
+    /// instead it should look at the next token to determine its left node
     StartExpr,
 
     NumberExpr,
@@ -363,21 +435,21 @@ class BinaryData {
 };
 
 // Credit: https://stackoverflow.com/questions/4157687/using-char-as-a-key-in-stdmap
-struct cmp_str
-{
-   bool operator()(char const *a, char const *b) const
-   {
+struct cmp_str {
+   bool operator() (char const *a, char const *b) const {
       return std::strcmp(a, b) < 0;
    }
 };
 
 class EvalContext {
-    std::map<const char *, double, cmp_str> variables = {{"PI", 3.14159}};
-    std::map<const char *, std::function<double(FunCallData)>, cmp_str> functions;
+    std::map<const char *, double, cmp_str> variables = {
+        {"PI", 3.14159}, {"PHI", (1.+sqrt(5.))/2.}, {"E", 2.71828}
+    };
+    std::map<const char *, std::function<double(EvalContext *, const Expr *)>, cmp_str> functions;
 
     public:
 
-        EvalContext(const char *_program) : program(_program) {}
+        EvalContext(const char *_program);
 
         const char *program;
 
@@ -385,7 +457,7 @@ class EvalContext {
             return variables.at(var);
         }
 
-        std::function<double(FunCallData)> get_function(const char *fun_name) {
+        std::function<double(EvalContext *, const Expr *)> get_function(const char *fun_name) {
             return functions.at(fun_name);
         }
 };
@@ -432,12 +504,60 @@ class Expr {
         void print_expr_tree(std::ostream& o = std::cout, uint64_t level = 0);
 };
 
+double abs_fun(EvalContext *ec, const Expr *fun_call_expr) {
+    assert(fun_call_expr->type == ExprType::FunCallExpr);
+    if (fun_call_expr->data.as_fun_call.len != 1) {
+        throw EvalException(ec->program, "ABS takes 1 argument", fun_call_expr->start, fun_call_expr->end);
+    }
+    double num = fun_call_expr->data.as_fun_call.args[0]->eval(ec);
+    if (num < 0)
+        return -num;
+    return num;
+}
+
+double sin_fun(EvalContext *ec, const Expr *fun_call_expr) {
+    assert(fun_call_expr->type == ExprType::FunCallExpr);
+    if (fun_call_expr->data.as_fun_call.len != 1) {
+        throw EvalException(ec->program, "SIN takes 1 argument", fun_call_expr->start, fun_call_expr->end);
+    }
+    double num = fun_call_expr->data.as_fun_call.args[0]->eval(ec);
+
+    return sin(num);
+}
+
+double cos_fun(EvalContext *ec, const Expr *fun_call_expr) {
+    assert(fun_call_expr->type == ExprType::FunCallExpr);
+    if (fun_call_expr->data.as_fun_call.len != 1) {
+        throw EvalException(ec->program, "COS takes 1 argument", fun_call_expr->start, fun_call_expr->end);
+    }
+    double num = fun_call_expr->data.as_fun_call.args[0]->eval(ec);
+
+    return cos(num);
+}
+
+double sqrt_fun(EvalContext *ec, const Expr *fun_call_expr) {
+    assert(fun_call_expr->type == ExprType::FunCallExpr);
+    if (fun_call_expr->data.as_fun_call.len != 1 && fun_call_expr->data.as_fun_call.len != 2) {
+        throw EvalException(ec->program, "SQRT takes 1", fun_call_expr->start, fun_call_expr->end);
+    }
+    double num = fun_call_expr->data.as_fun_call.args[0]->eval(ec);
+    return sqrt(num);
+
+}
+
+EvalContext::EvalContext(const char *_program) : program(_program) {
+    functions.emplace(std::pair{"ABS", abs_fun});
+    functions.emplace(std::pair{"SIN", sin_fun});
+    functions.emplace(std::pair{"COS", cos_fun});
+    functions.emplace(std::pair{"SQRT", sqrt_fun});
+}
+
 
 /// ```
+/// term        => factor (("+" | "-") term)*
+/// factor      => exponent (("*" | "/") exponent)*
+/// exponent    => fun_call ("^" fun_call)*
 /// fun_call    => symbol "(" expr ("," expr )* ")" | term
-/// term        => factor (("+" | "-") term)
-/// factor      => exponent (("*" | "/") exponent)
-/// exponent    => primary "^" primary
 /// primary     => num | symbol | var | "(" fun_call ")" | "-" fun_call | primary "!" 
 /// ```
 double Expr::eval(EvalContext *ec) {
@@ -467,9 +587,9 @@ double Expr::eval(EvalContext *ec) {
             {
                 double num = data.as_unary->eval(ec);
                 double temp;
-                std::modf(num, &temp);
-                if (temp != 0 || num < 0) {
-                    throw EvalException(ec->program, "Only positive whole numbers have a factorials!", data.as_unary->start, data.as_unary->end);
+                double check = std::modf(num, &temp);
+                if (check != 0.0 || num < 0) {
+                    throw EvalException(ec->program, "Only positive whole integers may be used in a factorial!", data.as_unary->start, data.as_unary->end);
                 }
                 return factorial(num);
             }
@@ -516,7 +636,7 @@ double Expr::eval(EvalContext *ec) {
         
         case ExprType::FunCallExpr:
             {
-                std::function<double (FunCallData)> f;
+                std::function<double (EvalContext *, const Expr *)> f;
                 try
                 {
                     f = ec->get_function(data.as_fun_call.name);
@@ -526,11 +646,12 @@ double Expr::eval(EvalContext *ec) {
                     throw EvalException(ec->program, "No such function exists", start, end);
                 }
                 
-                return f(data.as_fun_call);
+                return f(ec, this);
             }
             break;
 
         default:
+            std::cout << type;
             assert(false && "All cases must be covered in eval");
     }
     return 0;
@@ -588,9 +709,6 @@ Expr::~Expr() {
         case ExprType::FunCallExpr:
             fun_call_data_free(&data.as_fun_call);
             break;
-
-        default:
-            assert(false && "All cases must be covered in destructor");
     }
 }
 
@@ -666,7 +784,7 @@ std::ostream& operator<<(std::ostream& o, Expr *p) {
     return o;
 }
 
-class ParsingException : CalcException {
+class ParsingException : public CalcException {
     public:
         ParsingException(const char *program, const char* msg, Pos start, Pos end) : CalcException(program, msg, start, end)  {};
 };
@@ -676,7 +794,7 @@ class EOFBeforeExpectedException : public std::exception {
     const char *what() const noexcept override {return "This function should not have been called!";}
  };
 
-static Expr *START = new Expr(ExprType::StartExpr, Pos{0, 0}, Pos{0, 0});
+static Expr *START = new Expr(ExprType::StartExpr, Pos{0, 0, 0}, Pos{0, 0, 0});
 
 class Parser {
     private:
@@ -713,7 +831,7 @@ class Parser {
                     if (is_right_paren) {
                         std::string temp = "Expected a ')', but got: ";
                         temp.append(token_type_to_str(right_paren->type));
-                        throw ParsingException(tokenizer.get_program(), temp.c_str(), right_paren->start, right_paren->end);
+                        throw ParsingException(tokenizer.get_program(), copy_string(temp.c_str()), right_paren->start, right_paren->end);
                     }
                     delete right_paren;
                     ret_expr = expr;
@@ -722,7 +840,7 @@ class Parser {
             
             case TokenType::MinusOperationToken:
                 {
-                    Expr *expr = parse_expr();
+                    Expr *expr = parse_factor(START);
                     ret_expr = new Expr(ExprType::NegationExpr, expr, n->start, expr->end);
                 }
                 break;
@@ -731,75 +849,24 @@ class Parser {
                 throw EOFBeforeExpectedException();
 
             default:
-                std::string temp = "Unexpected token: ";
+                std::string temp = "Unexpected token: \"";
                 temp.append(token_type_to_str(n->type));
-                throw ParsingException(tokenizer.get_program(), temp.c_str(), n->start, n->end);
+                temp.append("\"");
+                throw ParsingException(tokenizer.get_program(), copy_string(temp.c_str()), n->start, n->end);
                 
             }
             delete n;
             Token *factorial = tokenizer.lookahead();
             if (factorial->type == TokenType::FactorialOperationToken) {
+                delete tokenizer.next();
                 ret_expr = new Expr(ExprType::FactorialExpr, ret_expr, n->start, factorial->end);
             }
             return ret_expr;
         }
 
-        /// exponent    => primary "^" primary
-        Expr *parse_exponent(Expr *left) {
-            left = parse_primary(left);
-            Token *exponent_token = tokenizer.lookahead();
-            if (exponent_token->type != TokenType::ExponentOperationToken) {
-                return left;
-            }
-            delete tokenizer.next(); // consume the exponent operator
-            Expr *right = parse_primary(START);
-            return new Expr(ExprType::ExponentExpr, BinaryData{left, right}, left->start, right->end);
-        }
-
-        /// factor      => exponent (("*" | "/") exponent)
-        Expr *parse_factor(Expr *left) {
-            left = parse_exponent(left);
-            Token *factor_token = tokenizer.lookahead();
-
-            if (factor_token->type != TokenType::MultiplyOperationToken && factor_token->type != TokenType::DivideOperationToken) {
-                return left;
-            }
-
-            ExprType tt;
-            if (factor_token->type == TokenType::MultiplyOperationToken) {
-                tt = ExprType::MultiplyExpr;
-            } else {
-                tt = ExprType::DivideExpr;
-            }
-
-            delete tokenizer.next();
-            Expr *right = parse_exponent(START);
-            return new Expr(tt, BinaryData {left, right}, left->start, right->end);    
-        }
-
-        /// term        => factor (("+" | "-") term)
-        Expr *parse_term(Expr *left) {
-            left = parse_factor(left);
-            Token *term_token = tokenizer.lookahead();
-            ExprType tt;
-            if (term_token->type == TokenType::PlusOperationToken) {
-                tt = ExprType::PlusExpr;
-            } else {
-                tt = ExprType::MinusExpr;
-            }
-
-            if (term_token->type != TokenType::PlusOperationToken && term_token->type != TokenType::MinusOperationToken) {
-                return left;
-            }
-
-            delete tokenizer.next();
-            Expr *right = parse_factor(START);
-            return new Expr(tt, BinaryData {left, right}, left->start, right->end);   
-        }
-
-        /// fun_call    => symbol "(" expr ("," expr )* ")" | term
+                /// fun_call    => symbol "(" expr ("," expr )* ")" | term
         Expr *parse_fun_call(Expr *left) {
-            left = parse_term(left);
+            left = parse_primary(left);
 
             if (tokenizer.lookahead()->type != TokenType::LeftParenToken) {
                 return left;
@@ -831,11 +898,11 @@ class Parser {
                 throw EOFBeforeExpectedException();
             }
 
-            fun_call_args_push(&fcd, parse_expr());
+            fun_call_args_push(&fcd, parse_term(START));
 
             while (tokenizer.lookahead()->type == TokenType::CommaToken) {
                 delete tokenizer.next();
-                fun_call_args_push(&fcd, parse_expr());
+                fun_call_args_push(&fcd, parse_term(START));
             }
 
             if (tokenizer.lookahead()->type == TokenType::EOFToken) {
@@ -854,6 +921,62 @@ class Parser {
             throw EOFBeforeExpectedException();
         };
 
+        /// exponent    => primary "^" primary
+        Expr *parse_exponent(Expr *left) {
+            left = parse_fun_call(left);
+            Token *exponent_token = tokenizer.lookahead();
+            if (exponent_token->type != TokenType::ExponentOperationToken) {
+                return left;
+            }
+
+            delete tokenizer.next(); // consume the exponent operator
+            Expr *right = parse_expr();
+            return new Expr(ExprType::ExponentExpr, BinaryData{left, right}, left->start, right->end);
+        }
+
+        /// factor      => exponent (("*" | "/") exponent)
+        Expr *parse_factor(Expr *left) {
+            left = parse_exponent(left);
+            Token *factor_token = tokenizer.lookahead();
+
+            while (factor_token->type == TokenType::MultiplyOperationToken || factor_token->type == TokenType::DivideOperationToken) {
+                ExprType tt;
+                if (factor_token->type == TokenType::MultiplyOperationToken) {
+                    tt = ExprType::MultiplyExpr;
+                } else {
+                    tt = ExprType::DivideExpr;
+                }
+
+                delete tokenizer.next();
+                Expr *right = parse_exponent(START);
+                left = new Expr(tt, BinaryData {left, right}, left->start, right->end);
+                factor_token = tokenizer.lookahead();  
+            }
+            return left;
+        }
+
+        /// term        => factor (("+" | "-") factor)*
+        Expr *parse_term(Expr *left) {
+            left = parse_factor(left);
+
+            Token *term_token = tokenizer.lookahead();
+            while (term_token->type == TokenType::PlusOperationToken || term_token->type == TokenType::MinusOperationToken) {
+                ExprType tt;
+                if (term_token->type == TokenType::PlusOperationToken) {
+                    tt = ExprType::PlusExpr;
+                } else {
+                    tt = ExprType::MinusExpr;
+                }
+
+                delete tokenizer.next();
+                Expr *right = parse_factor(START);
+                left = new Expr(tt, BinaryData {left, right}, left->start, right->end);    
+                term_token = tokenizer.lookahead();
+            }
+            
+            return left;
+        }
+
     public:
         Parser(char *str) {
             tokenizer = Tokenizer(str);
@@ -864,9 +987,10 @@ class Parser {
         }
 
         Expr *parse_expr() {
-            Expr *left = parse_fun_call(START);
-            while (tokenizer.lookahead()->type != TokenType::EOFToken) {
-                left = parse_fun_call(left);
+            Expr *left = parse_term(START);
+            Token *lookahead = tokenizer.lookahead();
+            while (lookahead->type != TokenType::EOFToken && lookahead->type != TokenType::RightParenToken && lookahead->type != TokenType::CommaToken) {
+                left = parse_term(left);
             }
             return left;
         }
@@ -875,105 +999,171 @@ class Parser {
 void testing() {
     // TOKENIZER TESTS
     Tokenizer tokenizer1(" asdf 1 () 420.69 + - * /");
-    Token t1 = *tokenizer1.next();
-    Token t2 = *tokenizer1.next();
-    Token t3 = *tokenizer1.next();
-    Token t4 = *tokenizer1.next();
-    Token t5 = *tokenizer1.next();
-    Token t6 = *tokenizer1.next();
-    Token t7 = *tokenizer1.next();
-    Token t8 = *tokenizer1.next();
-    Token t9 = *tokenizer1.next();
-    Token t10 = *tokenizer1.next();
+    Token *t1 = tokenizer1.next();
+    Token *t2 = tokenizer1.next();
+    Token *t3 = tokenizer1.next();
+    Token *t4 = tokenizer1.next();
+    Token *t5 = tokenizer1.next();
+    Token *t6 = tokenizer1.next();
+    Token *t7 = tokenizer1.next();
+    Token *t8 = tokenizer1.next();
+    Token *t9 = tokenizer1.next();
+    Token *t10 = tokenizer1.next();
     
-    assert(t1.type == TokenType::SymbolToken);
-    assert(!strcmp(t1.as_str, "asdf"));
-    assert(t2.type == TokenType::NumberToken);
-    assert(t2.as_number == 1.);
-    assert(t3.type == TokenType::LeftParenToken);
-    assert(t4.type == TokenType::RightParenToken);
-    assert(t5.type == TokenType::NumberToken);
-    assert(t5.as_number == 420.69);
-    assert(t6.type == TokenType::PlusOperationToken);
-    assert(t7.type == TokenType::MinusOperationToken);
-    assert(t8.type == TokenType::MultiplyOperationToken);
-    assert(t9.type == TokenType::DivideOperationToken);
+    assert(t1->type == TokenType::SymbolToken);
+    assert(!strcmp(t1->as_str, "asdf"));
+    assert(t2->type == TokenType::NumberToken);
+    assert(t2->as_number == 1.);
+    assert(t3->type == TokenType::LeftParenToken);
+    assert(t4->type == TokenType::RightParenToken);
+    assert(t5->type == TokenType::NumberToken);
+    assert(t5->as_number == 420.69);
+    assert(t6->type == TokenType::PlusOperationToken);
+    assert(t7->type == TokenType::MinusOperationToken);
+    assert(t8->type == TokenType::MultiplyOperationToken);
+    assert(t9->type == TokenType::DivideOperationToken);
 
     Parser p1("1");
-    Expr e1 = *p1.parse_expr();
-    assert(e1.type == ExprType::NumberExpr);
-    assert(e1.data.as_number == 1.);
+    Expr *e1 = p1.parse_expr();
+    assert(e1->type == ExprType::NumberExpr);
+    assert(e1->data.as_number == 1.);
+    delete e1;
 
     Parser p2("PI^69");
-    Expr e2 = *p2.parse_expr();
-    assert(e2.type == ExprType::ExponentExpr);
-    assert(!strcmp(e2.data.as_binary.left->data.as_var, "PI"));
-    assert(e2.data.as_binary.right->data.as_number == 69);
+    Expr *e2 = p2.parse_expr();
+    assert(e2->type == ExprType::ExponentExpr);
+    assert(!strcmp(e2->data.as_binary.left->data.as_var, "PI"));
+    assert(e2->data.as_binary.right->data.as_number == 69);
+    delete e2;
 
     Parser p3("PI^(69^3)");
-    Expr e3 = *p3.parse_expr();
-    assert(e3.type == ExprType::ExponentExpr);
-    assert(!strcmp(e3.data.as_binary.left->data.as_var, "PI"));
-    assert(e3.data.as_binary.right->data.as_binary.left->data.as_number == 69);
-    assert(e3.data.as_binary.right->data.as_binary.right->data.as_number == 3);
+    Expr *e3 = p3.parse_expr();
+    assert(e3->type == ExprType::ExponentExpr);
+    assert(!strcmp(e3->data.as_binary.left->data.as_var, "PI"));
+    assert(e3->data.as_binary.right->data.as_binary.left->data.as_number == 69);
+    assert(e3->data.as_binary.right->data.as_binary.right->data.as_number == 3);
+    delete e3;
 
     Parser p4("PI/5^3");
-    Expr e4 = *p4.parse_expr();
-    assert(e4.type == ExprType::DivideExpr);
-    assert(!strcmp(e4.data.as_binary.left->data.as_var, "PI"));
-    assert(e4.data.as_binary.right->type == ExprType::ExponentExpr);
-    assert(e4.data.as_binary.right->data.as_binary.left->data.as_number == 5);
-    assert(e4.data.as_binary.right->data.as_binary.right->data.as_number == 3);
+    Expr *e4 = p4.parse_expr();
+    assert(e4->type == ExprType::DivideExpr);
+    assert(!strcmp(e4->data.as_binary.left->data.as_var, "PI"));
+    assert(e4->data.as_binary.right->type == ExprType::ExponentExpr);
+    assert(e4->data.as_binary.right->data.as_binary.left->data.as_number == 5);
+    assert(e4->data.as_binary.right->data.as_binary.right->data.as_number == 3);
+    delete e4;
 
     Parser p5("PI+5*3!");
-    Expr e5 = *p5.parse_expr();
-    assert(e5.type == ExprType::PlusExpr);
-    assert(!strcmp(e5.data.as_binary.left->data.as_var, "PI"));
-    assert(e5.data.as_binary.right->type == ExprType::MultiplyExpr);
-    assert(e5.data.as_binary.right->data.as_binary.left->data.as_number == 5);
-    assert(e5.data.as_binary.right->data.as_binary.right->type == ExprType::FactorialExpr);
-    assert(e5.data.as_binary.right->data.as_binary.right->data.as_unary->data.as_number == 3);
+    Expr *e5 = p5.parse_expr();
+    assert(e5->type == ExprType::PlusExpr);
+    assert(!strcmp(e5->data.as_binary.left->data.as_var, "PI"));
+    assert(e5->data.as_binary.right->type == ExprType::MultiplyExpr);
+    assert(e5->data.as_binary.right->data.as_binary.left->data.as_number == 5);
+    assert(e5->data.as_binary.right->data.as_binary.right->type == ExprType::FactorialExpr);
+    assert(e5->data.as_binary.right->data.as_binary.right->data.as_unary->data.as_number == 3);
+    delete e5;
+
 
     Parser p6("ABS()");
-    Expr e6 = *p6.parse_expr();
-    assert(e6.type == ExprType::FunCallExpr);
-    assert(e6.data.as_fun_call.len == 0);
-    assert(!strcmp(e6.data.as_fun_call.name, "ABS"));
+    Expr *e6 = p6.parse_expr();
+    assert(e6->type == ExprType::FunCallExpr);
+    assert(e6->data.as_fun_call.len == 0);
+    assert(!strcmp(e6->data.as_fun_call.name, "ABS"));
+    delete e6;
+
 
     Parser p7("ABS(69)");
-    Expr e7 = *p7.parse_expr();
-    assert(e7.data.as_fun_call.args[0]->data.as_number == 69);
-    assert(e7.data.as_fun_call.len == 1);
+    Expr *e7 = p7.parse_expr();
+    assert(e7->data.as_fun_call.args[0]->data.as_number == 69);
+    assert(e7->data.as_fun_call.len == 1);
+    delete e7;
 
     Parser p8("SOMETHING(69, 70, 71)");
-    Expr e8 = *p8.parse_expr();
-    assert(e8.data.as_fun_call.args[0]->data.as_number == 69);
-    assert(e8.data.as_fun_call.len == 3);
+    Expr *e8 = p8.parse_expr();
+    assert(e8->data.as_fun_call.args[0]->data.as_number == 69);
+    assert(e8->data.as_fun_call.len == 3);
+    delete e8;
 
     std::string prog1 = " 35    + 34 + 35 - 34 -1";
     Parser p9(prog1.c_str());
     Expr *e9 = p9.parse_expr();
-    std::cout << e9;
     EvalContext *ec1 = new EvalContext(prog1.c_str());
     assert(e9->eval(ec1) == 69);
+    delete e9;
+    delete ec1;
 
     std::cout << "All tests ran successfully!";
 }
 
+void run(std::string input) {
+    Parser parser(input.c_str());
+    EvalContext eval_context(input.c_str());
+
+    Expr *expr = nullptr;
+    try {
+        expr = parser.parse_expr();
+    } catch (ParsingException e) {
+        std::cout << e.what();
+        std::flush(std::cout);
+        free((char *) e.what());
+        return;
+    } catch (EOFBeforeExpectedException e) {
+        if (expr != nullptr)
+            delete expr;
+        std::string temp;
+        std::cout << "> ";
+        std::getline(std::cin, temp, '\n');
+        input << "\n" << temp;
+        run(input);
+        return;
+    }
+
+    try {
+        std::cout << expr->eval(&eval_context) << std::endl;
+    } catch (EvalException e) {
+        std::cout << e.what();
+        std::flush(std::cout);
+        free((char *) e.what());
+    }
+
+    delete expr;
+}
 
 int main(int argc, char const *argv[]) {
     if (argc > 1 && !strcmp(argv[1], "test")) {
-        testing();
+        try {
+            testing();
+        } catch (ParsingException e) {
+            std::cout << e.what();
+        }
         return 0;
     }
-    char *stuff = "1+0/6*5";
-    Parser p(stuff);
-    Expr *expr = p.parse_expr();
-    EvalContext ec(stuff);
+    std::string in;
 
-    std::cout << expr << std::endl;
-    std::cout << expr->eval(&ec) << std::endl;
+    std::cout << "Calculator:" << std::endl;
+    std::cout << "Type in any math expression" << std::endl;
+    std::cout << "ex: ABS(-69)*420/69" << std::endl;
+    std::cout << "(type \"exit\" to exit; \"help\" for help)" << std::endl;
 
-    delete expr;
+    while (true) {
+        std::cout << "> ";
+        std::getline(std::cin, in, '\n');
+        if (in == "exit" || in == "quit") {
+            std::cout << "Bye!";
+            break;
+        }
+        if (in == "help") {
+            // TODO: make this more generic and have EvalContext take in the description of functions as well
+            std::cout << "Variables: PI, PHI, E" << std::endl;
+            std::cout << "Functions:" << std::endl;
+            std::cout << "\tABS(num) = absolute value of num" << std::endl;
+            std::cout << "\tSIN(num) = sin of num" << std::endl;
+            std::cout << "\tCOS(num) = cos of num" << std::endl;
+            std::cout << "\tSQRT(num) = sqrt of num" << std::endl;
+            continue;
+        }
+        run(in);
+    }
+
     return 0;
 }
