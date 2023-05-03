@@ -21,3 +21,4 @@ g++ day7\eloadas7.cpp -o dest\eloadas7.exe
 clang day8\day8.cpp -o dest\day8.exe @REM # Unfortunately for some reason vectors dont work on my machine with g++
 g++ "day11\calculator_(ech).cpp" -o dest\day11ech.exe
 clang "day11\day11.cpp" -o dest\day11.exe
+clang "zh/zh.cpp" -o dest\zh.exe
